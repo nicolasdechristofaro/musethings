@@ -2,7 +2,10 @@ import { ApiError, notFound } from '../errors.ts'
 import type { Audit } from '../audit.ts'
 import { Queue } from '../queue.ts'
 import type { ThingsScripts } from './applescript.ts'
-import { planTodoChange, type ChangePlan, type Lookup, type TodoFields, type TodoInput } from './changes.ts'
+import {
+  checkTitle, planProjectChange, planTodoChange,
+  type ChangePlan, type Lookup, type ProjectFields, type ProjectInput, type TodoFields, type TodoInput,
+} from './changes.ts'
 import { mismatches, type Expectation } from './expect.ts'
 import { thingsUrl } from './urlscheme.ts'
 import type { Project, Status, Todo } from './types.ts'
@@ -127,6 +130,60 @@ export class Writer {
       await this.d.things.trashTodo(id)
       const after = await this.confirm(() => this.d.reader.getTodo(id), { lists: ['trash'] }, 'the move to Trash')
       this.d.audit({ op: 'trash_todo', id, before, after })
+      return after
+    })
+  }
+
+  private existingProject(id: string): Project {
+    const project = this.d.reader.getProject(id)
+    if (project) return project
+    if (this.d.reader.kindOf(id) === 'todo') throw notFound(`${id} is a to-do, not a project; use /todos/${id}`)
+    throw notFound(`No project with id ${id}`)
+  }
+
+  createProject(input: ProjectInput): Promise<Project> {
+    return this.run(async () => {
+      const { todos = [], ...fields } = input
+      const plan = planProjectChange(fields, null, this.d.reader, this.d.now())
+      for (const t of todos) checkTitle(t)
+      delete plan.url.title // AppleScript sets the title when it creates the project
+      const id = await this.d.things.createProject(input.title, todos)
+      const after = await this.apply('project', id, plan, () => this.d.reader.getProject(id), 'the new project')
+      this.d.audit({ op: 'create_project', id, before: null, after })
+      return after
+    })
+  }
+
+  updateProject(id: string, fields: ProjectFields): Promise<Project> {
+    return this.run(async () => {
+      const before = this.existingProject(id)
+      const plan = planProjectChange(fields, before, this.d.reader, this.d.now())
+      const after = await this.apply('project', id, plan, () => this.d.reader.getProject(id), 'the change')
+      this.d.audit({ op: 'update_project', id, before, after })
+      return after
+    })
+  }
+
+  setProjectStatus(id: string, action: 'complete' | 'cancel'): Promise<Project> {
+    return this.run(async () => {
+      const before = this.existingProject(id)
+      const target: Status = action === 'complete' ? 'completed' : 'canceled'
+      if (before.status === target) return before
+      const url: Record<string, boolean> = action === 'complete' ? { completed: true } : { canceled: true }
+      const plan: ChangePlan = { url, tags: null, toInbox: false, expect: { status: target } }
+      const after = await this.apply('project', id, plan, () => this.d.reader.getProject(id), `the project as ${target}`)
+      this.d.audit({ op: `${action}_project`, id, before, after })
+      return after
+    })
+  }
+
+  trashProject(id: string): Promise<Project> {
+    return this.run(async () => {
+      const before = this.existingProject(id)
+      if (before.list === 'trash') return before
+      await this.d.things.trashProject(id)
+      const after = await this.confirm(() => this.d.reader.getProject(id), { lists: ['trash'] }, 'the move to Trash')
+      this.d.audit({ op: 'trash_project', id, before, after })
       return after
     })
   }

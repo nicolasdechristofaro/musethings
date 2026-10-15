@@ -2,7 +2,7 @@ import { invalid } from '../errors.ts'
 import { addDays, isIsoDate, isTime, todayIso } from './dates.ts'
 import type { ThingsDb } from './db.ts'
 import type { Expectation } from './expect.ts'
-import type { Todo } from './types.ts'
+import type { Project, Todo } from './types.ts'
 
 /** 'today' | 'evening' | 'tomorrow' | 'anytime' | 'someday' | 'YYYY-MM-DD' */
 export type When = string
@@ -175,6 +175,34 @@ export function planTodoChange(f: TodoFields, current: Todo | null, lookup: Look
     }
     plan.toInbox = true
     plan.expect.lists = ['inbox']
+  }
+  return plan
+}
+
+export type ProjectFields = {
+  title?: string
+  notes?: string | null
+  when?: When | null
+  deadline?: string | null
+  tags?: string[]
+  add_tags?: string[]
+  remove_tags?: string[]
+  area_id?: string
+}
+
+export type ProjectInput = Omit<ProjectFields, 'title' | 'add_tags' | 'remove_tags'> & { title: string; todos?: string[] }
+
+export function planProjectChange(f: ProjectFields, current: Project | null, lookup: Lookup, now: Date): ChangePlan {
+  const plan: ChangePlan = { url: {}, tags: null, toInbox: false, expect: {} }
+  if (f.when === 'evening') throw invalid("projects can't be scheduled for This Evening; use today")
+  planBasics(f, plan)
+  planWhen({ when: f.when }, current, todayIso(now), plan)
+  plan.tags = tagPlan(f, current)
+  if (plan.tags) plan.expect.tags = plan.tags
+  if (f.area_id !== undefined) {
+    if (!lookup.areaExists(f.area_id)) throw invalid(`area_id ${f.area_id} is not an area in Things`)
+    plan.url['area-id'] = f.area_id
+    plan.expect.area = f.area_id
   }
   return plan
 }
