@@ -5,7 +5,7 @@ import path from 'node:path'
 import { ApiError } from '../errors.ts'
 import { isoDateToUnix, packDate, todayIso } from './dates.ts'
 import { toTodo, type TaskRow } from './map.ts'
-import type { ChecklistItem, Kind, ReadableList, Todo } from './types.ts'
+import type { Area, AreaDetail, ChecklistItem, Kind, Project, ProjectDetail, ReadableList, Ref, Status, Tag, Todo } from './types.ts'
 
 const GROUP_CONTAINER = 'Library/Group Containers/JLMPQHK86H.com.culturedcode.ThingsMac'
 
@@ -41,7 +41,7 @@ export const TASK_SELECT = `
   LEFT JOIN TMTask p ON p.uuid = COALESCE(t.project, h.project)
   LEFT JOIN TMArea a ON a.uuid = COALESCE(t.area, p.area)`
 
-const NOT_TEMPLATE = 't.rt1_recurrenceRule IS NULL AND t.repeater IS NULL'
+export const NOT_TEMPLATE = 't.rt1_recurrenceRule IS NULL AND t.repeater IS NULL'
 /** Open, visible to-dos: not trashed, not a template, parent project/heading still open. */
 export const OPEN_TODO = `t.type = 0 AND t.status = 0 AND t.trashed = 0 AND ${NOT_TEMPLATE}
   AND (p.uuid IS NULL OR (p.trashed = 0 AND p.status = 0))
@@ -56,6 +56,27 @@ const LIST_SQL: Record<Exclude<ReadableList, 'logbook'>, string> = {
             AND (p.uuid IS NULL OR p.start = 1) ORDER BY t."index"`,
   someday: `${OPEN_TODO} AND t.start = 2 AND t.startDate IS NULL ORDER BY t."index"`,
 }
+
+export type TodoFilter = {
+  q?: string
+  tag?: string
+  project_id?: string
+  area_id?: string
+  deadline_before?: string
+  status?: Status | 'any'
+  limit?: number
+}
+
+const STATUS_CODE: Record<Status, number> = { open: 0, canceled: 2, completed: 3 }
+
+/** Same columns as TASK_SELECT so rows go through toTodo; projects have no heading/project parent. */
+const PROJECT_SELECT = `
+  SELECT t.uuid, t.title, t.notes, t.status, t.trashed, t.start, t.startDate, t.startBucket,
+         t.reminderTime, t.deadline, t.creationDate, t.userModificationDate, t.stopDate,
+         NULL AS rt1_repeatingTemplate, NULL AS headingId, NULL AS headingTitle,
+         NULL AS projectId, NULL AS projectTitle, a.uuid AS areaId, a.title AS areaTitle
+  FROM TMTask t
+  LEFT JOIN TMArea a ON a.uuid = t.area`
 
 export class ThingsDb {
   private readonly db: DatabaseSync
@@ -120,6 +141,134 @@ export class ThingsDb {
   getTodo(id: string): Todo | null {
     const rows = this.all<TaskRow>(`${TASK_SELECT} WHERE t.uuid = ? AND t.type = 0 AND ${NOT_TEMPLATE}`, id)
     return rows.length ? this.hydrate(rows)[0] : null
+  }
+
+  searchTodos(f: TodoFilter): Todo[] {
+    const where = ['t.type = 0', 't.trashed = 0', NOT_TEMPLATE]
+    const params: SQLInputValue[] = []
+    const status = f.status ?? 'open'
+    if (status !== 'any') {
+      where.push('t.status = ?')
+      params.push(STATUS_CODE[status])
+    }
+    if (f.q) {
+      const like = `%${f.q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+      where.push(`(t.title LIKE ? ESCAPE '\\' OR t.notes LIKE ? ESCAPE '\\')`)
+      params.push(like, like)
+    }
+    if (f.tag) {
+      where.push(`EXISTS (SELECT 1 FROM TMTaskTag tt JOIN TMTag g ON g.uuid = tt.tags
+                  WHERE tt.tasks = t.uuid AND g.title = ? COLLATE NOCASE)`)
+      params.push(f.tag)
+    }
+    if (f.project_id) {
+      where.push('p.uuid = ?')
+      params.push(f.project_id)
+    }
+    if (f.area_id) {
+      where.push('a.uuid = ?')
+      params.push(f.area_id)
+    }
+    if (f.deadline_before) {
+      where.push('t.deadline IS NOT NULL AND t.deadline <= ?')
+      params.push(packDate(f.deadline_before))
+    }
+    params.push(Math.min(f.limit ?? 100, 500))
+    return this.hydrate(this.all<TaskRow>(
+      `${TASK_SELECT} WHERE ${where.join(' AND ')} ORDER BY t.deadline IS NULL, t.deadline, t."index" LIMIT ?`,
+      ...params,
+    ))
+  }
+
+  private headingsOf(projectId: string): Ref[] {
+    return this.all<{ uuid: string; title: string | null }>(
+      `SELECT uuid, title FROM TMTask WHERE type = 2 AND project = ? AND trashed = 0 ORDER BY "index"`,
+      projectId,
+    ).map((r) => ({ id: r.uuid, title: r.title ?? '' }))
+  }
+
+  private toProjects(rows: TaskRow[]): Project[] {
+    const today = this.today()
+    return rows.map((r) => {
+      const { checklist: _c, heading: _h, project: _p, repeating: _r, ...base } = toTodo(r, this.tagsOf(r.uuid), [], today)
+      const [{ n }] = this.all<{ n: number }>(
+        `SELECT count(*) AS n FROM TMTask t LEFT JOIN TMTask h ON h.uuid = t.heading
+         WHERE t.type = 0 AND t.status = 0 AND t.trashed = 0 AND ${NOT_TEMPLATE}
+           AND COALESCE(t.project, h.project) = ?`,
+        r.uuid,
+      )
+      return { ...base, todos_open: n, headings: this.headingsOf(r.uuid) }
+    })
+  }
+
+  listProjects(): Project[] {
+    return this.toProjects(this.all<TaskRow>(
+      `${PROJECT_SELECT} WHERE t.type = 1 AND t.status = 0 AND t.trashed = 0 ORDER BY t."index"`,
+    ))
+  }
+
+  /** Any project by id, in any state. */
+  getProject(id: string): Project | null {
+    return this.toProjects(this.all<TaskRow>(`${PROJECT_SELECT} WHERE t.uuid = ? AND t.type = 1`, id))[0] ?? null
+  }
+
+  getProjectDetail(id: string): ProjectDetail | null {
+    const project = this.getProject(id)
+    if (!project) return null
+    const todos = this.hydrate(this.all<TaskRow>(
+      `${TASK_SELECT} WHERE ${OPEN_TODO} AND p.uuid = ? ORDER BY t."index"`,
+      id,
+    ))
+    const groups = [
+      { heading: null, todos: todos.filter((t) => !t.heading) },
+      ...project.headings.map((h) => ({ heading: h, todos: todos.filter((t) => t.heading?.id === h.id) })),
+    ]
+    return { ...project, groups }
+  }
+
+  private toArea(r: { uuid: string; title: string | null }): Area {
+    const tags = this.all<{ title: string }>(
+      `SELECT g.title FROM TMAreaTag x JOIN TMTag g ON g.uuid = x.tags WHERE x.areas = ? ORDER BY g."index"`,
+      r.uuid,
+    ).map((t) => t.title)
+    return { id: r.uuid, title: r.title ?? '', tags }
+  }
+
+  listAreas(): Area[] {
+    return this.all<{ uuid: string; title: string | null }>(`SELECT uuid, title FROM TMArea ORDER BY "index"`)
+      .map((r) => this.toArea(r))
+  }
+
+  getArea(id: string): AreaDetail | null {
+    const [row] = this.all<{ uuid: string; title: string | null }>(`SELECT uuid, title FROM TMArea WHERE uuid = ?`, id)
+    if (!row) return null
+    const projects = this.toProjects(this.all<TaskRow>(
+      `${PROJECT_SELECT} WHERE t.type = 1 AND t.status = 0 AND t.trashed = 0 AND t.area = ? ORDER BY t."index"`,
+      id,
+    ))
+    const todos = this.hydrate(this.all<TaskRow>(
+      `${TASK_SELECT} WHERE ${OPEN_TODO} AND t.area = ? AND p.uuid IS NULL ORDER BY t."index"`,
+      id,
+    ))
+    return { ...this.toArea(row), projects, todos }
+  }
+
+  areaExists(id: string): boolean {
+    return this.all(`SELECT 1 FROM TMArea WHERE uuid = ?`, id).length > 0
+  }
+
+  listTags(): Tag[] {
+    return this.all<{ uuid: string; title: string | null; parent: string | null }>(
+      `SELECT g.uuid, g.title, pg.title AS parent FROM TMTag g LEFT JOIN TMTag pg ON pg.uuid = g.parent ORDER BY g."index"`,
+    ).map((r) => ({ id: r.uuid, title: r.title ?? '', parent: r.parent }))
+  }
+
+  getHeading(id: string): { id: string; title: string; projectId: string } | null {
+    const [r] = this.all<{ uuid: string; title: string | null; project: string }>(
+      `SELECT uuid, title, project FROM TMTask WHERE uuid = ? AND type = 2 AND trashed = 0`,
+      id,
+    )
+    return r ? { id: r.uuid, title: r.title ?? '', projectId: r.project } : null
   }
 
   kindOf(id: string): Kind | null {
