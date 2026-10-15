@@ -117,7 +117,8 @@ export class FakeThings implements ThingsScripts {
           start: date <= today ? 1 : 2,
           startDate: packDate(date),
           startBucket: 0,
-          reminderTime: time ? packTime(time) : null,
+          // Like real Things (seen 2026-10-15): a date without @time keeps any existing reminder.
+          ...(time ? { reminderTime: packTime(time) } : {}),
         })
       }
     }

@@ -23,10 +23,38 @@ end run`,
   end tell
 end run`,
   trashTodo: `on run argv
-  tell application "Things3" to delete to do id (item 1 of argv)
+  tell application "Things3"
+    try
+      delete to do id (item 1 of argv)
+    on error
+      -- Things only deletes completed or canceled items through the Logbook,
+      -- or, if they've left it, once they're open again.
+      try
+        delete (to do id (item 1 of argv) of list "Logbook")
+      on error
+        set x to to do id (item 1 of argv)
+        set status of x to open
+        delete x
+      end try
+    end try
+  end tell
 end run`,
   trashProject: `on run argv
-  tell application "Things3" to delete project id (item 1 of argv)
+  tell application "Things3"
+    try
+      delete project id (item 1 of argv)
+    on error
+      -- Things only deletes completed or canceled items through the Logbook,
+      -- or, if they've left it, once they're open again.
+      try
+        delete (project id (item 1 of argv) of list "Logbook")
+      on error
+        set x to project id (item 1 of argv)
+        set status of x to open
+        delete x
+      end try
+    end try
+  end tell
 end run`,
   moveToInbox: `on run argv
   tell application "Things3" to move to do id (item 1 of argv) to list "Inbox"

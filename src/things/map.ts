@@ -13,6 +13,7 @@ export type TaskRow = {
   startBucket: number | null
   reminderTime: number | null
   deadline: number | null
+  deadlineSuppressionDate: number | null
   creationDate: number | null
   userModificationDate: number | null
   stopDate: number | null
@@ -33,6 +34,8 @@ export function listOf(r: TaskRow, today: number): ListName {
   if (r.trashed) return 'trash'
   if (r.status !== 0) return 'logbook'
   if (r.start === 0) return 'inbox'
+  // Things shows an unscheduled to-do in Today once its deadline comes, unless dismissed.
+  if (r.startDate == null && r.deadline != null && r.deadline <= today && r.deadlineSuppressionDate == null) return 'today'
   if (r.startDate != null && r.startDate <= today) return r.startBucket === 1 ? 'evening' : 'today'
   if (r.startDate != null) return 'upcoming'
   if (r.start === 2) return 'someday'

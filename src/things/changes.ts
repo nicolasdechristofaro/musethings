@@ -34,6 +34,8 @@ export type ChangePlan = {
   tags: string[] | null
   toInbox: boolean
   expect: Expectation
+  /** Things keeps a reminder when only the date is re-sent; clear the schedule first. */
+  clearReminderFirst?: boolean
 }
 
 const WHEN_HELP = 'when must be today, evening, tomorrow, anytime, someday, a date like 2026-10-17, or null'
@@ -100,6 +102,7 @@ export function planWhen(
   plan.url.when = f.reminder ? `${date}@${f.reminder}` : date
   plan.expect.when = date
   if (f.reminder !== undefined) plan.expect.reminder = f.reminder
+  if (f.reminder === null && current && 'reminder' in current && current.reminder) plan.clearReminderFirst = true
 }
 
 function planLocation(f: TodoFields, lookup: Lookup, plan: ChangePlan) {

@@ -28,6 +28,10 @@ beforeAll(() => {
     .task({ uuid: 'unconfirmed', start: 2, startDate: TODAY, todayIndex: 3 })
     .task({ uuid: 'instance1', start: 1, startDate: TODAY, todayIndex: 4, rt1_repeatingTemplate: 'template1' })
     .task({ uuid: 'evening1', start: 1, startDate: TODAY, startBucket: 1, todayIndex: 0 })
+    .task({ uuid: 'dueToday', start: 1, deadline: TODAY, todayIndex: 5 })
+    .task({ uuid: 'dueOverdue', start: 1, deadline: YESTERDAY, todayIndex: 6 })
+    .task({ uuid: 'dueSuppressed', start: 1, deadline: YESTERDAY, deadlineSuppressionDate: TODAY })
+    .task({ uuid: 'dueLater', start: 1, deadline: TOMORROW })
     .task({ uuid: 'template1', start: 1, startDate: TODAY, rt1_recurrenceRule: RULE })
     .task({ uuid: 'template2', start: 1, repeater: RULE })
     .task({ uuid: 'upcoming1', start: 2, startDate: TOMORROW })
@@ -54,7 +58,15 @@ describe('lists', () => {
   })
 
   it('today: overdue and unconfirmed included, evening last, templates excluded', () => {
-    expect(ids(db.listTodos('today'))).toEqual(['overdue', 'today1', 'unconfirmed', 'instance1', 'evening1'])
+    expect(ids(db.listTodos('today'))).toEqual(['overdue', 'today1', 'unconfirmed', 'instance1', 'dueToday', 'dueOverdue', 'evening1'])
+  })
+
+  it('today: unscheduled to-dos whose deadline has come, unless dismissed', () => {
+    const today = ids(db.listTodos('today'))
+    expect(today).not.toContain('dueSuppressed')
+    expect(today).not.toContain('dueLater')
+    expect(db.getTodo('dueToday')!.list).toBe('today')
+    expect(db.getTodo('dueSuppressed')!.list).toBe('anytime')
   })
 
   it('upcoming', () => {

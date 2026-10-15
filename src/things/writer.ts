@@ -65,12 +65,37 @@ export class Writer {
   private async apply<T extends Todo | Project>(
     kind: 'todo' | 'project', id: string, plan: ChangePlan, read: () => T | null, what: string,
   ): Promise<T> {
+    const command = kind === 'todo' ? 'update' : 'update-project'
+    if (plan.clearReminderFirst) {
+      await this.d.openUrl(thingsUrl(command, id, { when: 'anytime' }, this.d.authToken))
+      await this.confirm(read, { when: null, reminder: null }, 'clearing the reminder')
+    }
     if (plan.toInbox) await this.d.things.moveToInbox(id)
     if (plan.tags) await this.d.things.setTags(kind, id, plan.tags)
     if (Object.keys(plan.url).length) {
-      await this.d.openUrl(thingsUrl(kind === 'todo' ? 'update' : 'update-project', id, plan.url, this.d.authToken))
+      await this.d.openUrl(thingsUrl(command, id, plan.url, this.d.authToken))
     }
     return this.confirm(read, plan.expect, what)
+  }
+
+  /** Runs one write and audits it, failures included. A failed create names the item it left behind. */
+  private async audited<T extends Todo | Project>(
+    op: string, id: string, before: T | null, read: () => T | null, work: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      const after = await work()
+      this.d.audit({ op, id, before, after })
+      return after
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.d.audit({ op, id, before, after: read(), error: message })
+      if (before === null && err instanceof ApiError) {
+        throw new ApiError(err.status, err.code,
+          `The new item was created in Things (id ${id}), but not every detail was applied. ${message} ` +
+          "Don't create it again; finish it using its id.")
+      }
+      throw err
+    }
   }
 
   private existingTodo(id: string): Todo {
@@ -85,14 +110,21 @@ export class Writer {
     throw notFound(`No to-do with id ${id}`)
   }
 
+  private readTodo(id: string) {
+    return () => this.d.reader.getTodo(id)
+  }
+
+  private readProject(id: string) {
+    return () => this.d.reader.getProject(id)
+  }
+
   createTodo(input: TodoInput): Promise<Todo> {
     return this.run(async () => {
       const plan = planTodoChange(input, null, this.d.reader, this.d.now())
       delete plan.url.title // AppleScript sets the title when it creates the to-do
       const id = await this.d.things.createTodo(input.title)
-      const after = await this.apply('todo', id, plan, () => this.d.reader.getTodo(id), 'the new to-do')
-      this.d.audit({ op: 'create_todo', id, before: null, after })
-      return after
+      const read = this.readTodo(id)
+      return this.audited('create_todo', id, null, read, () => this.apply('todo', id, plan, read, 'the new to-do'))
     })
   }
 
@@ -100,9 +132,8 @@ export class Writer {
     return this.run(async () => {
       const before = this.existingTodo(id)
       const plan = planTodoChange(fields, before, this.d.reader, this.d.now())
-      const after = await this.apply('todo', id, plan, () => this.d.reader.getTodo(id), 'the change')
-      this.d.audit({ op: 'update_todo', id, before, after })
-      return after
+      const read = this.readTodo(id)
+      return this.audited('update_todo', id, before, read, () => this.apply('todo', id, plan, read, 'the change'))
     })
   }
 
@@ -117,9 +148,9 @@ export class Writer {
         : before.status === 'canceled' ? { canceled: false }
         : { completed: false }
       const plan: ChangePlan = { url, tags: null, toInbox: false, expect: { status: target } }
-      const after = await this.apply('todo', id, plan, () => this.d.reader.getTodo(id), `the to-do as ${target}`)
-      this.d.audit({ op: `${action}_todo`, id, before, after })
-      return after
+      const read = this.readTodo(id)
+      return this.audited(`${action}_todo`, id, before, read,
+        () => this.apply('todo', id, plan, read, `the to-do as ${target}`))
     })
   }
 
@@ -127,10 +158,11 @@ export class Writer {
     return this.run(async () => {
       const before = this.existingTodo(id)
       if (before.list === 'trash') return before
-      await this.d.things.trashTodo(id)
-      const after = await this.confirm(() => this.d.reader.getTodo(id), { lists: ['trash'] }, 'the move to Trash')
-      this.d.audit({ op: 'trash_todo', id, before, after })
-      return after
+      const read = this.readTodo(id)
+      return this.audited('trash_todo', id, before, read, async () => {
+        await this.d.things.trashTodo(id)
+        return this.confirm(read, { lists: ['trash'] }, 'the move to Trash')
+      })
     })
   }
 
@@ -148,9 +180,8 @@ export class Writer {
       for (const t of todos) checkTitle(t)
       delete plan.url.title // AppleScript sets the title when it creates the project
       const id = await this.d.things.createProject(input.title, todos)
-      const after = await this.apply('project', id, plan, () => this.d.reader.getProject(id), 'the new project')
-      this.d.audit({ op: 'create_project', id, before: null, after })
-      return after
+      const read = this.readProject(id)
+      return this.audited('create_project', id, null, read, () => this.apply('project', id, plan, read, 'the new project'))
     })
   }
 
@@ -158,9 +189,8 @@ export class Writer {
     return this.run(async () => {
       const before = this.existingProject(id)
       const plan = planProjectChange(fields, before, this.d.reader, this.d.now())
-      const after = await this.apply('project', id, plan, () => this.d.reader.getProject(id), 'the change')
-      this.d.audit({ op: 'update_project', id, before, after })
-      return after
+      const read = this.readProject(id)
+      return this.audited('update_project', id, before, read, () => this.apply('project', id, plan, read, 'the change'))
     })
   }
 
@@ -171,9 +201,9 @@ export class Writer {
       if (before.status === target) return before
       const url: Record<string, boolean> = action === 'complete' ? { completed: true } : { canceled: true }
       const plan: ChangePlan = { url, tags: null, toInbox: false, expect: { status: target } }
-      const after = await this.apply('project', id, plan, () => this.d.reader.getProject(id), `the project as ${target}`)
-      this.d.audit({ op: `${action}_project`, id, before, after })
-      return after
+      const read = this.readProject(id)
+      return this.audited(`${action}_project`, id, before, read,
+        () => this.apply('project', id, plan, read, `the project as ${target}`))
     })
   }
 
@@ -181,10 +211,11 @@ export class Writer {
     return this.run(async () => {
       const before = this.existingProject(id)
       if (before.list === 'trash') return before
-      await this.d.things.trashProject(id)
-      const after = await this.confirm(() => this.d.reader.getProject(id), { lists: ['trash'] }, 'the move to Trash')
-      this.d.audit({ op: 'trash_project', id, before, after })
-      return after
+      const read = this.readProject(id)
+      return this.audited('trash_project', id, before, read, async () => {
+        await this.d.things.trashProject(id)
+        return this.confirm(read, { lists: ['trash'] }, 'the move to Trash')
+      })
     })
   }
 }

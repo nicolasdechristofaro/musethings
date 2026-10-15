@@ -22,7 +22,7 @@ describe('AppleScript calls', () => {
     const { calls, runner } = recorder()
     const things = appleScriptThings(makeSystem(runner))
     expect(await things.createTodo(NASTY)).toBe('ID1')
-    expect(calls).toEqual([['osascript', ['-e', SCRIPTS.createTodo, NASTY]]])
+    expect(calls).toEqual([['osascript', ['-e', SCRIPTS.createTodo, '--', NASTY]]])
     expect(SCRIPTS.createTodo).not.toContain('MARKER')
   })
 
@@ -32,9 +32,9 @@ describe('AppleScript calls', () => {
     await things.createProject('Trip', ['Pack', 'Book hotel'])
     await things.setTags('todo', 'T9', ['phone', 'errands'])
     await things.setTags('project', 'P9', [])
-    expect(calls[0][1].slice(2)).toEqual(['Trip', 'Pack', 'Book hotel'])
-    expect(calls[1][1]).toEqual(['-e', SCRIPTS.setTodoTags, 'T9', 'phone, errands'])
-    expect(calls[2][1]).toEqual(['-e', SCRIPTS.setProjectTags, 'P9', ''])
+    expect(calls[0][1].slice(3)).toEqual(['Trip', 'Pack', 'Book hotel'])
+    expect(calls[1][1]).toEqual(['-e', SCRIPTS.setTodoTags, '--', 'T9', 'phone, errands'])
+    expect(calls[2][1]).toEqual(['-e', SCRIPTS.setProjectTags, '--', 'P9', ''])
   })
 
   it.runIf(process.platform === 'darwin')('real osascript returns argv text verbatim and runs none of it', async () => {
@@ -43,6 +43,16 @@ describe('AppleScript calls', () => {
     const sys = makeSystem(execRunner)
     const echo = 'on run argv\n  return item 1 of argv\nend run'
     expect(await sys.osascript(echo, [text])).toBe(text)
+    expect(fs.existsSync(marker)).toBe(false)
+  })
+
+  it.runIf(process.platform === 'darwin')('a leading "-" is text, not an osascript option', async () => {
+    const marker = path.join(os.tmpdir(), `musethings-dash-${process.pid}`)
+    const sys = makeSystem(execRunner)
+    const echo = 'on run argv\n  return item 1 of argv\nend run'
+    for (const text of [`-eproperty p : (do shell script "touch ${marker}")`, '- buy milk', '-5 lbs', '--> call Bob']) {
+      expect(await sys.osascript(echo, [text])).toBe(text)
+    }
     expect(fs.existsSync(marker)).toBe(false)
   })
 })
@@ -57,6 +67,21 @@ describe('errors from osascript', () => {
       .toMatchObject({ status: 404, code: 'not_found' })
     expect(mapAppleScriptError(fail('something odd (-2700)')))
       .toMatchObject({ status: 503, code: 'things_unavailable' })
+  })
+
+  it('a hung Things is write_not_confirmed, and no error repeats the script source', async () => {
+    const hung = makeSystem(async () => {
+      throw Object.assign(new Error(`Command failed: osascript -e ${SCRIPTS.createTodo}`), { killed: true, signal: 'SIGTERM', stderr: '' })
+    })
+    const err = await hung.osascript(SCRIPTS.createTodo, ['x']).catch((e) => e)
+    expect(err).toMatchObject({ status: 503, code: 'write_not_confirmed' })
+    expect(err.message).not.toContain('on run argv')
+    const odd = makeSystem(async () => {
+      throw Object.assign(new Error(`Command failed: osascript -e ${SCRIPTS.createTodo}`), { code: 1, stderr: '' })
+    })
+    const err2 = await odd.osascript(SCRIPTS.createTodo, ['x']).catch((e) => e)
+    expect(err2).toMatchObject({ code: 'things_unavailable' })
+    expect(err2.message).not.toContain('on run argv')
   })
 
   it('wraps runner failures from osascript', async () => {

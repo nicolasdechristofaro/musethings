@@ -31,7 +31,7 @@ export function findDbPath(home: string = os.homedir()): string {
 /** Joins every task query uses. `t` is the to-do; `h`, `p`, `a` its heading, project, area. */
 export const TASK_SELECT = `
   SELECT t.uuid, t.title, t.notes, t.status, t.trashed, t.start, t.startDate, t.startBucket,
-         t.reminderTime, t.deadline, t.creationDate, t.userModificationDate, t.stopDate,
+         t.reminderTime, t.deadline, t.deadlineSuppressionDate, t.creationDate, t.userModificationDate, t.stopDate,
          t.rt1_repeatingTemplate,
          h.uuid AS headingId, h.title AS headingTitle,
          p.uuid AS projectId, p.title AS projectTitle,
@@ -49,7 +49,9 @@ export const OPEN_TODO = `t.type = 0 AND t.status = 0 AND t.trashed = 0 AND ${NO
 
 const LIST_SQL: Record<Exclude<ReadableList, 'logbook'>, string> = {
   inbox: `${OPEN_TODO} AND t.start = 0 ORDER BY t."index"`,
-  today: `${OPEN_TODO} AND t.start IN (1, 2) AND t.startDate IS NOT NULL AND t.startDate <= ?
+  today: `${OPEN_TODO} AND (
+            (t.start IN (1, 2) AND t.startDate IS NOT NULL AND t.startDate <= ?)
+            OR (t.startDate IS NULL AND t.deadline IS NOT NULL AND t.deadline <= ? AND t.deadlineSuppressionDate IS NULL))
           ORDER BY t.startBucket, t.todayIndex, t."index"`,
   upcoming: `${OPEN_TODO} AND t.start IN (1, 2) AND t.startDate > ? ORDER BY t.startDate, t.todayIndex`,
   anytime: `${OPEN_TODO} AND t.start = 1 AND (t.startDate IS NULL OR t.startDate <= ?)
@@ -72,7 +74,7 @@ const STATUS_CODE: Record<Status, number> = { open: 0, canceled: 2, completed: 3
 /** Same columns as TASK_SELECT so rows go through toTodo; projects have no heading/project parent. */
 const PROJECT_SELECT = `
   SELECT t.uuid, t.title, t.notes, t.status, t.trashed, t.start, t.startDate, t.startBucket,
-         t.reminderTime, t.deadline, t.creationDate, t.userModificationDate, t.stopDate,
+         t.reminderTime, t.deadline, t.deadlineSuppressionDate, t.creationDate, t.userModificationDate, t.stopDate,
          NULL AS rt1_repeatingTemplate, NULL AS headingId, NULL AS headingTitle,
          NULL AS projectId, NULL AS projectTitle, a.uuid AS areaId, a.title AS areaTitle
   FROM TMTask t
@@ -133,7 +135,8 @@ export class ThingsDb {
       ))
     }
     const sql = `${TASK_SELECT} WHERE ${LIST_SQL[list]} LIMIT ?`
-    const params: SQLInputValue[] = LIST_SQL[list].includes('?') ? [this.today(), limit] : [limit]
+    const todayMarks = LIST_SQL[list].split('?').length - 1
+    const params: SQLInputValue[] = [...Array<number>(todayMarks).fill(this.today()), limit]
     return this.hydrate(this.all<TaskRow>(sql, ...params))
   }
 

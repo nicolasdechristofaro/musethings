@@ -19,6 +19,7 @@ export type TaskRow = {
   startBucket?: number
   reminderTime?: number | null
   deadline?: number | null
+  deadlineSuppressionDate?: number | null
   index?: number
   todayIndex?: number
   area?: string | null
@@ -34,7 +35,7 @@ export type TaskRow = {
 
 const TASK_DEFAULTS: Omit<TaskRow, 'uuid'> = {
   type: 0, status: 0, trashed: 0, title: '', notes: '', start: 1, startDate: null, startBucket: 0,
-  reminderTime: null, deadline: null, index: 0, todayIndex: 0, area: null, project: null, heading: null,
+  reminderTime: null, deadline: null, deadlineSuppressionDate: null, index: 0, todayIndex: 0, area: null, project: null, heading: null,
   creationDate: 1760000000, userModificationDate: 1760000000, stopDate: null,
   rt1_repeatingTemplate: null, rt1_recurrenceRule: null, repeater: null,
 }

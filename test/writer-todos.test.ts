@@ -114,6 +114,11 @@ describe('updateTodo', () => {
     await expect(writer.updateTodo('x1', { reminder: '18:00' })).rejects.toMatchObject({ code: 'invalid_request' })
   })
 
+  it('clears a reminder and keeps the date (Things keeps reminders on date-only updates)', async () => {
+    await writer.updateTodo('x1', { when: '2026-10-20', reminder: '18:00' })
+    expect(await writer.updateTodo('x1', { reminder: null })).toMatchObject({ when: '2026-10-20', reminder: null })
+  })
+
   it('replaces, adds and removes tags (any case)', async () => {
     expect((await writer.updateTodo('x1', { add_tags: ['phone', 'errands'] })).tags).toEqual(['Errands', 'phone'])
     expect((await writer.updateTodo('x1', { remove_tags: ['ERRANDS'] })).tags).toEqual(['phone'])
@@ -176,7 +181,17 @@ describe('confirmation', () => {
       status: 503, code: 'write_not_confirmed', message: expect.stringContaining('title'),
     })
     expect(Date.now() - started).toBeLessThan(1000)
-    expect(audit).toEqual([])
+    expect(audit).toEqual([expect.objectContaining({ op: 'update_todo', id: 'x1', error: expect.stringContaining('title') })])
+  })
+
+  it('a create Things only half-applies names the new id and is audited, so Muse does not duplicate it', async () => {
+    fake.ignoreUrls = true
+    const slow = makeWriter(200)
+    const err = await slow.createTodo({ title: 'Half', when: 'tomorrow' }).catch((e) => e)
+    expect(err).toMatchObject({ code: 'write_not_confirmed' })
+    const id = fake.log.find((l) => l.startsWith('open:'))!.slice('open:'.length)
+    expect(err.message).toContain(id)
+    expect(audit).toEqual([expect.objectContaining({ op: 'create_todo', id, before: null, error: expect.stringContaining('when') })])
   })
 
   it('runs parallel writes one at a time, each confirmed before the next (Review Focus 5)', async () => {

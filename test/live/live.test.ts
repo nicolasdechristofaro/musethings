@@ -109,4 +109,10 @@ describe.skipIf(!LIVE)('live Things (temporary "MuseThings Test" area, trashed a
     const t = await todo({ title: 'Live: trash' })
     expect((await writer.trashTodo(t.id)).list).toBe('trash')
   })
+
+  it('trashes a completed to-do (Things only deletes logged items through the Logbook)', async () => {
+    const t = await todo({ title: 'Live: trash completed' })
+    await writer.setTodoStatus(t.id, 'complete')
+    expect((await writer.trashTodo(t.id)).list).toBe('trash')
+  })
 })
