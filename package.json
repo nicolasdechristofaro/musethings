@@ -1,0 +1,24 @@
+{
+  "name": "musethings",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "serve": "node src/cli.ts serve",
+    "test": "vitest run",
+    "test:live": "MUSETHINGS_LIVE=1 vitest run test/live",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@fastify/swagger": "^9.9.2",
+    "fastify": "^5.12.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
