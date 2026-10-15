@@ -6,6 +6,7 @@ import type { ThingsDb } from '../things/db.ts'
 import type { Writer } from '../things/writer.ts'
 import { COMPONENTS } from './schemas.ts'
 import { readRoutes } from './read-routes.ts'
+import { writeRoutes } from './write-routes.ts'
 
 export type AppDeps = {
   reader: ThingsDb
@@ -92,5 +93,6 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.get('/openapi.json', { schema: { hide: true } }, async () => app.swagger())
   readRoutes(app, deps)
+  writeRoutes(app, deps)
   return app
 }
